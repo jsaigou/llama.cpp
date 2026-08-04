@@ -838,6 +838,7 @@ public:
     //  - when not in sleeping state
     //  - and, with thread-safe APIs (e.g., tokenizer calls)
     llama_model * model_tgt = nullptr;
+    bool is_hybrid_or_recurrent = false;        // Kintsugi: true for hybrid (SSM+attn) or pure recurrent
 
     mtmd_context * mctx = nullptr;
     // note: video_params.ffmpeg_bin_dir points into params_base, which outlives this struct
@@ -1116,6 +1117,11 @@ private:
         n_ctx = llama_n_ctx(ctx_tgt);
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
+        // Kintsugi: detect hybrid or pure-recurrent architecture
+        is_hybrid_or_recurrent = llama_model_is_hybrid(model_tgt) || llama_model_is_recurrent(model_tgt);
+        if (is_hybrid_or_recurrent) {
+            fprintf(stderr, "Kintsugi: hybrid/recurrent model detected, enabling cross-turn cache reuse\n");
+        }
 
         if (has_spec) {
             // spec_mtp doesn't use load a model internally, so we report 0.0 and 1.0 manually
@@ -1202,6 +1208,12 @@ private:
         }
 
         n_swa = params_base.swa_full ? 0 : llama_model_n_swa(model_tgt);
+        // Kintsugi: enforce minimum ctx_checkpoints for hybrid/recurrent models
+        if (is_hybrid_or_recurrent && params_base.n_ctx_checkpoints == 0) {
+            params_base.n_ctx_checkpoints = 4;
+            fprintf(stderr, "Kintsugi: set n_ctx_checkpoints=%u for hybrid/recurrent model (was 0)\n",
+                    params_base.n_ctx_checkpoints);
+        }
 
         // Necessary similarity of prompt for slot selection
         slot_prompt_similarity = params_base.slot_prompt_similarity;
@@ -3320,29 +3332,47 @@ private:
                                 }
 
                                 if (pos_min >= pos_min_thold) {
-                                    // search for a context checkpoint
-                                    const auto it = std::find_if(
-                                        slot.prompt.checkpoints.rbegin(),
-                                        slot.prompt.checkpoints.rend(),
-                                        [&](const auto & cur) {
-                                            // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
-                                            SLT_TRC(slot, "checking checkpoint with [%d, %d] against %d...\n", cur.pos_min, cur.pos_max, pos_min_thold);
-                                            // workaround for [TAG_CHECKPOINTS_FIX_POS_MIN]
-                                            if (cur.pos_max > pos_next) {
-                                                return false;
-                                            }
-                                            return cur.pos_min < pos_min_thold || cur.pos_min == 0;
+                                    // Kintsugi: for hybrid/recurrent models, use position-independent selection
+                                    const auto it = [&]() -> decltype(slot.prompt.checkpoints.rend()) {
+                                        if (is_hybrid_or_recurrent) {
+                                            // Prefer generation checkpoints, fall back to any valid checkpoint
+                                            auto it = std::find_if(
+                                                slot.prompt.checkpoints.rbegin(),
+                                                slot.prompt.checkpoints.rend(),
+                                                [&](const auto & cur) {
+                                                    if (cur.pos_max > pos_next) return false;
+                                                    return cur.is_generation_checkpoint;
+                                                });
+                                            if (it != slot.prompt.checkpoints.rend()) return it;
+                                            return std::find_if(
+                                                slot.prompt.checkpoints.rbegin(),
+                                                slot.prompt.checkpoints.rend(),
+                                                [&](const auto & cur) {
+                                                    return cur.pos_max <= pos_next;
+                                                });
+                                        } else {
+                                            return std::find_if(
+                                                slot.prompt.checkpoints.rbegin(),
+                                                slot.prompt.checkpoints.rend(),
+                                                [&](const auto & cur) {
+                                                    SLT_TRC(slot, "checking checkpoint with [%d, %d] against %d...\n", cur.pos_min, cur.pos_max, pos_min_thold);
+                                                    if (cur.pos_max > pos_next) return false;
+                                                    return cur.pos_min < pos_min_thold || cur.pos_min == 0;
+                                                });
                                         }
-                                    );
+                                    }();
 
                                     bool do_reset = it == slot.prompt.checkpoints.rend();
 
                                     if (!do_reset) {
-                                        // restore the context checkpoint
                                         it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                                         it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                                        // restore the draft's speculative state
                                         common_speculative_set_state(spec.get(), slot.id, it->data_spec);
+
+                                        // Kintsugi: sync GPU after state restore for hybrid/recurrent
+                                        if (is_hybrid_or_recurrent) {
+                                            llama_synchronize(ctx_tgt);
+                                        }
 
                                         pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
@@ -3359,14 +3389,22 @@ private:
                             }
 
                             {
-                                // erase any checkpoints with pos_max > pos_next
-                                for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
-                                    const auto & cur = *it;
-                                    if (cur.pos_max > pos_next) {
-                                        SLT_TRC(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
-                                        it = slot.prompt.checkpoints.erase(it);
-                                    } else {
-                                        ++it;
+                                // Kintsugi: for hybrid/recurrent after forced reset, preserve checkpoints
+                                if (is_hybrid_or_recurrent && pos_next == 0 && n_past == 0) {
+                                    if (!slot.prompt.checkpoints.empty()) {
+                                        SLT_DBG(slot, "Kintsugi: preserving %zu checkpoints after reset\n",
+                                                slot.prompt.checkpoints.size());
+                                    }
+                                } else {
+                                    // erase any checkpoints with pos_max > pos_next
+                                    for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
+                                        const auto & cur = *it;
+                                        if (cur.pos_max > pos_next) {
+                                            SLT_TRC(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
+                                            it = slot.prompt.checkpoints.erase(it);
+                                        } else {
+                                            ++it;
+                                        }
                                     }
                                 }
                             }
@@ -3859,6 +3897,22 @@ private:
                 // release slot because of stop condition
                 slot.print_timings();
                 send_final_response(slot);
+                // Kintsugi: save generation checkpoint for hybrid/recurrent models
+                if (is_hybrid_or_recurrent && params_base.n_ctx_checkpoints > 0 && slot.stats.n_gen > 0) {
+                    auto & ckpts = slot.prompt.checkpoints;
+                    if (!ckpts.empty() && ckpts.back().is_generation_checkpoint) {
+                        ckpts.pop_back();
+                    }
+                    auto * mem = llama_get_memory(ctx_tgt);
+                    const auto pos_min = llama_memory_seq_pos_min(mem, slot.id);
+                    const auto pos_max = llama_memory_seq_pos_max(mem, slot.id);
+                    const int64_t n_tokens_cur = slot.stats.n_prompt_processed + slot.stats.n_gen;
+                    create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
+                    if (!ckpts.empty()) {
+                        ckpts.back().is_generation_checkpoint = true;
+                    }
+                    fprintf(stderr, "Kintsugi: saved generation checkpoint\n");
+                }
                 slot.release();
 
                 return;

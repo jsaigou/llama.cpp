@@ -1169,6 +1169,7 @@ struct common_prompt_checkpoint {
 
     llama_pos pos_min;
     llama_pos pos_max;
+    bool is_generation_checkpoint = false;  // Kintsugi: true if saved at end of generation
 
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
