@@ -57,12 +57,25 @@ community PRs (none merged to `ggml-org/llama.cpp` as of this writing):
   [#27977](https://github.com/ggml-org/llama.cpp/pull/27977), and
   [#28068](https://github.com/ggml-org/llama.cpp/pull/28068)
 
-**Known requirement — ROCm-TheRock builds:** on Tohil's ROCm-TheRock 10.1 toolchain,
-the hipCUB TOP_K path hits graph-capture corruption (garbage decoded token IDs) unless
-launched with `GGML_CUDA_DISABLE_GRAPHS=1`. This is the same class of issue flagged in
-PR #27836's review thread (missing rocPRIM capture guard, upstream-fixed in ROCm 7.13+)
-— just not yet confirmed fixed on the TheRock variant. Standard ROCm 7.1/7.2.3 builds
-per community reports in the PR thread do not need this workaround.
+**Known requirement — currently unexplained:** on Tohil's ROCm-TheRock 10.1 toolchain,
+the hipCUB TOP_K path produces garbage decoded token IDs (`Invalid input batch` /
+corrupted output) under HIP graph capture unless launched with
+`GGML_CUDA_DISABLE_GRAPHS=1`.
+
+**This is NOT the rocPRIM graph-capture crash discussed in PR #26592's review thread**
+(`DeviceSegmentedRadixSort` crashing with `operation not permitted when stream is
+capturing` on rocPRIM < 4.4.0 / ROCm < 7.13, per @Geramy's diagnosis there) — that bug
+is a hard crash, not silent corruption, and Tohil's toolchain already ships past the
+fix: rocPRIM and hipCUB are both **4.5.0** here, and the `is_graph_capture` guard
+(`rocprim/device/device_segmented_radix_sort.hpp`) is present in Tohil's headers,
+verified directly (not inferred from the version number). Checked PR #27836's full
+comment thread and searched `ggml-org/llama.cpp` issues for this exact failure mode
+(garbage/invalid decoded token IDs under MTP + HIP graphs) on 2026-09-01 — nobody has
+reported it. This looks like a separate, still-undocumented bug, most likely in the
+MTP draft/verify graph-capture interaction itself (very fresh, unreviewed draft-PR
+code) rather than the rocPRIM library issue. Not yet reported upstream. Standard ROCm
+7.1/7.2.3 builds per community reports in the PR thread do not need
+`GGML_CUDA_DISABLE_GRAPHS=1`, for what is evidently a different reason than Tohil does.
 
 **Measured on Tohil (2026-09-01), gfx1151/ROCm, `Qwen3.8-Flash-Next-UD-Q3_K_XL` +
 [`drluoto/Qwen3.8-Flash-Next-MTP-GGUF`](https://huggingface.co/drluoto/Qwen3.8-Flash-Next-MTP-GGUF)
