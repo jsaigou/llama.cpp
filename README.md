@@ -17,6 +17,84 @@
 
 </div>
 
+## This fork (jsaigou/llama.cpp, branch `kintsugi`)
+
+This is a working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a
+self-hosted inference host running an AMD Strix Halo (Ryzen AI Max+ 395, `gfx1151`,
+128 GB unified memory). The `kintsugi` branch is rebased onto current upstream `master`
+periodically (last rebase: 2026-09-01, onto `458681e1d`) and carries two custom patch
+sets on top of stock upstream:
+
+### 1. Kintsugi — cross-turn KV cache reuse for hybrid/recurrent architectures
+
+**Status: production, stable.** One commit
+(`Kintsugi: cross-turn KV cache reuse for hybrid/recurrent architectures`) that lets
+hybrid/recurrent-architecture models (Qwen3.5 MoE, Qwen3.6, qwen4exp, etc.) reuse KV
+cache across conversation turns instead of reprocessing the full context every turn.
+In production use across multiple models on Tohil.
+
+### 2. Qwen3.8-Flash-Next (`qwen4exp`) MTP speculative decoding
+
+**Status: experimental, hardware-verified but not yet in daily production use.**
+Upstream's `qwen4exp` architecture (Qwen3.8-Flash-Next) shipped without its 4B MTP
+(multi-token-prediction) draft head — the real performance lever for this model.
+This fork assembles the pieces needed to use it, from several in-flight upstream
+community PRs (none merged to `ggml-org/llama.cpp` as of this writing):
+
+- [ggml-org/llama.cpp#27836](https://github.com/ggml-org/llama.cpp/pull/27836) —
+  `qwen4exp : add NextN/MTP draft head (--spec-type draft-mtp)` (draft, by
+  @rmonsurate)
+- [crusaderky's detached-head loader fix](https://github.com/crusaderky/llama.cpp/commit/a82a58a57fc307e5cec0dc68db64d143339be4f2) —
+  fixes a `blk.0` vs. `blk.38` tensor-naming mismatch that otherwise fails standalone
+  draft-model loading
+- The `mtp_only` export whitelist fix + hipCUB TOP_K integration
+  ([#26592](https://github.com/ggml-org/llama.cpp/pull/26592)) from
+  [@drluoto](https://github.com/drluoto)'s
+  [`strix-halo-flash-next`](https://github.com/drluoto/llama.cpp/tree/strix-halo-flash-next)
+  branch, which this fork's MTP work is based on
+- Follow-up correctness/decode fixes from
+  [#27941](https://github.com/ggml-org/llama.cpp/pull/27941),
+  [#27977](https://github.com/ggml-org/llama.cpp/pull/27977), and
+  [#28068](https://github.com/ggml-org/llama.cpp/pull/28068)
+
+**Known requirement — ROCm-TheRock builds:** on Tohil's ROCm-TheRock 10.1 toolchain,
+the hipCUB TOP_K path hits graph-capture corruption (garbage decoded token IDs) unless
+launched with `GGML_CUDA_DISABLE_GRAPHS=1`. This is the same class of issue flagged in
+PR #27836's review thread (missing rocPRIM capture guard, upstream-fixed in ROCm 7.13+)
+— just not yet confirmed fixed on the TheRock variant. Standard ROCm 7.1/7.2.3 builds
+per community reports in the PR thread do not need this workaround.
+
+**Measured on Tohil (2026-09-01), gfx1151/ROCm, `Qwen3.8-Flash-Next-UD-Q3_K_XL` +
+[`drluoto/Qwen3.8-Flash-Next-MTP-GGUF`](https://huggingface.co/drluoto/Qwen3.8-Flash-Next-MTP-GGUF)
+Q8_0 draft sidecar, 32K context, greedy decode, 400-token coding completion:**
+
+| Config | Decode speed | vs. baseline |
+|---|---|---|
+| No speculation | 22.06 t/s | — |
+| `--spec-type draft-mtp --spec-draft-n-max 3` | 34.5–34.7 t/s | **+56–57%** |
+
+Draft acceptance ~86% (269–273/307–312 tokens accepted). Output verified coherent and
+correct on real coding prompts.
+
+**Not yet done:** multi-turn Kintsugi-cache stress test under MTP, long-context (>32K)
+verification, and a production catalog promotion decision. Upstream PR #27836 is still
+draft/unmerged — this fork tracks it, not a stable release.
+
+### Updating this fork
+
+Both patch sets are single self-contained commits/short commit chains, kept as a clean
+cherry-pick chain on top of upstream `master` (not a long-lived merge) so they can be
+replayed onto a newer `master` at any time:
+
+```sh
+git checkout -b kintsugi-next upstream/master
+git cherry-pick <kintsugi-commit>
+git cherry-pick <qwen4exp-mtp-commit-range>
+# resolve any conflicts (expect occasional trivial ones as upstream's own
+# qwen4exp support evolves — diff carefully, they've so far all been comment/
+# already-superseded-test-case conflicts, not semantic ones)
+```
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
