@@ -57,6 +57,32 @@ community PRs (none merged to `ggml-org/llama.cpp` as of this writing):
   [#27977](https://github.com/ggml-org/llama.cpp/pull/27977), and
   [#28068](https://github.com/ggml-org/llama.cpp/pull/28068)
 
+**Root cause found and fixed, 2026-09-03 — `GGML_CUDA_DISABLE_GRAPHS=1` is not actually
+needed; the real problem was `GGML_CUDA_ENABLE_UNIFIED_MEMORY`.** The original 2026-09-01
+finding below is kept verbatim for the record, but its diagnosis was wrong: the corruption
+isn't caused by HIP graph capture alone. It's caused by `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON`
+(a runtime env var, checked via `getenv()` in `ggml_cuda_device_malloc`, `ggml-cuda.cu` —
+switches the allocator from `hipMalloc` to `hipMallocManaged`) combined with HIP graph
+capture. Confirmed with a clean A/B/C isolation on Tohil, live: `-ngl 999 -ngld 999`, no
+unified-memory env var, graphs on → clean across 24+ turns. Same config plus the env var,
+graphs on → a hard `HSA_STATUS_ERROR_MEMORY_FAULT` page fault inside `k_get_rows_float`
+(the token-embedding lookup kernel) on the very first request, every time. Same config plus
+the env var plus `GGML_CUDA_DISABLE_GRAPHS=1` → clean again. The `GGML_HIP_UMA` CMake flag
+every kintsugi ROCm build has always passed alongside it turns out to be a complete no-op —
+grep the tree, it's never referenced by any `#if`/`#ifdef`, only sets a CMake cache variable.
+And the documented ~63 GB ceiling this env var is supposed to lift didn't reproduce either: a
+90 GB Flash-Next load at full 262144 context worked fine on plain `hipMalloc` alone, most
+likely because this is a true APU with no separate VRAM — the kernel's own GTT mechanism
+already gives the GPU broad system-RAM access regardless of which userspace allocator is
+used. Removed from Tohil's four slot env files 2026-09-03 (`/etc/sysconfig/forge-a{1,2,3,4}-env`
+— see `progress.md`'s "GGML_CUDA_ENABLE_UNIFIED_MEMORY was the actual culprit" entry and
+this repo's `CLAUDE.md` "Unified Memory" bullet for the full writeup); `GGML_CUDA_DISABLE_GRAPHS=1`
+should not be needed on any ROCm+MTP config on this host now that the actual trigger is gone.
+Not yet re-verified above ~90 GB or on a non-hybrid/non-MTP ROCm mode.
+
+<details>
+<summary>Original 2026-09-01 finding (superseded diagnosis, kept for the record)</summary>
+
 **Known requirement — currently unexplained:** on Tohil's ROCm-TheRock 10.1 toolchain,
 the hipCUB TOP_K path produces garbage decoded token IDs (`Invalid input batch` /
 corrupted output) under HIP graph capture unless launched with
@@ -76,6 +102,8 @@ MTP draft/verify graph-capture interaction itself (very fresh, unreviewed draft-
 code) rather than the rocPRIM library issue. Not yet reported upstream. Standard ROCm
 7.1/7.2.3 builds per community reports in the PR thread do not need
 `GGML_CUDA_DISABLE_GRAPHS=1`, for what is evidently a different reason than Tohil does.
+
+</details>
 
 **Measured on Tohil (2026-09-01), gfx1151/ROCm, `Qwen3.8-Flash-Next-UD-Q3_K_XL` +
 [`drluoto/Qwen3.8-Flash-Next-MTP-GGUF`](https://huggingface.co/drluoto/Qwen3.8-Flash-Next-MTP-GGUF)
@@ -143,13 +171,19 @@ checkpoint-restore runaway, no asserts, unchanged throughput (~25–29 t/s, matc
 baseline), coherent output throughout. Full detail: commit on
 `fix/qwen4exp-eog-checkpoint`, merged into `kintsugi` at the source level.
 
-**Not yet deployed:** this only advances the tracked source tree
-(`/opt/tohil/llama.cpp-kintsugi`, now ahead of the running `build-rocm-new` binary by
-this fix). Deploying it means rebuilding and restarting the live production binary
-(`build-rocm-new`, catalog `builds.id=10`) — deliberately left as an explicit operator
-decision rather than done unilaterally, given it's the binary serving real traffic.
-Also not yet pushed to GitHub (`origin/kintsugi`) — Tohil has no cached push credentials
-for `jsaigou/llama.cpp`, same gap noted below for the MTP-ondevice branch.
+**Deployed 2026-09-03, with operator sign-off.** Rebuilt `build-rocm-new` (`builds.id=10`) and
+`build-vulkan-new` (`builds.id=9`) from this fix, caught a real RPATH regression in the rebuild
+before it caused an outage (the original builds had `-DCMAKE_INSTALL_RPATH='$ORIGIN;...'`
+set — a plain rebuild without it bakes in an absolute path that breaks the moment the build
+directory gets renamed into place), fixed and reconfigured both, smoke-tested each, then
+atomically swapped both into place with zero live processes running on either path (old
+binaries kept as `*-pre-eogfix-20260903`, nothing deleted). Live-verified via the real
+`forge load` path against Qwen3.8-Flash-Next, not just a standalone bypass — see
+`progress.md`'s 2026-09-03 entries for the full narrative, including a second, more serious
+bug this same verification pass surfaced (`GGML_CUDA_ENABLE_UNIFIED_MEMORY`, see this
+README's `GGML_CUDA_DISABLE_GRAPHS` section above). Still not pushed to GitHub
+(`origin/kintsugi`) — Tohil has no cached push credentials for `jsaigou/llama.cpp`, same gap
+noted below for the MTP-ondevice branch.
 
 ### Updating this fork
 
