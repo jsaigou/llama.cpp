@@ -223,6 +223,38 @@ adjacent to the separate vLLM-integration track, and #28019's `--parallel`-only 
 already known/deliberately parked for the same reason). Worth an upstream report if/when someone
 picks up concurrent MTP serving; not filed from this session.
 
+### Resolved, same day: the real trigger was `GGML_CUDA_ENABLE_UNIFIED_MEMORY`, not graphs alone
+
+The "still did not reproduce" verdict above turned out to be right for the wrong reason: none of
+this session's (or 2026-09-02's) standalone test harnesses ever set
+`GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON`, and that omission is exactly why every test stayed clean.
+Live-loading Qwen3.8-Flash-Next through the *real* `forge load` path (not a standalone bypass)
+crashed on the very first request — a hard `HSA_STATUS_ERROR_MEMORY_FAULT` page fault inside
+`k_get_rows_float`, the token-embedding lookup kernel. Isolated with a clean A/B/C, live on
+Tohil: known-good config (`-ngl 999 -ngld 999`, graphs on, no unified-memory env var) → clean.
+Same config plus `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON` → crash on the first request, every time.
+Same config plus the env var plus `GGML_CUDA_DISABLE_GRAPHS=1` → clean again.
+
+The env var is real (`getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY")` in `ggml_cuda_device_malloc`,
+`ggml-cuda.cu` — switches the allocator from `hipMalloc` to `hipMallocManaged`), but the
+compile-time `GGML_HIP_UMA` CMake flag every ROCm build here has always passed alongside it is a
+total no-op — grep the tree, it's never read by any `#if`/`#ifdef`. And the ~63 GB ceiling this
+env var is documented (in the ai-mode CLAUDE.md) to lift didn't reproduce either: a 90 GB
+Flash-Next load at full 262144 context worked fine on plain `hipMalloc` alone, most likely
+because this is a true APU with no separate VRAM — the kernel's own GTT mechanism already
+provides broad system-RAM access regardless of the userspace allocator.
+
+**Fix:** removed `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON` from all four of Tohil's slot env files
+(`/etc/sysconfig/forge-a{1,2,3,4}-env`) — no `forge` Go code change needed, since
+`writeServiceFiles` only *preserves* whatever's already there for non-`FORGE_` keys, never
+writes this one fresh. Re-verified clean through the real production path afterward, twice (the
+exact sequence that crashed before, then an 8-turn soak), full throughput, correct cross-turn
+cache reuse, host healthy throughout. `GGML_CUDA_DISABLE_GRAPHS=1` should not be needed on any
+ROCm+MTP config on this host anymore. Full narrative: `progress.md`'s 2026-09-03
+"GGML_CUDA_ENABLE_UNIFIED_MEMORY was the actual culprit" entry; the ai-mode `CLAUDE.md` "Unified
+Memory" bullet also carries the correction. Not yet re-verified above ~90 GB or on a
+non-hybrid/non-MTP ROCm mode.
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
