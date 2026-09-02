@@ -158,12 +158,70 @@ retest didn't happen to hit. **Do not remove `GGML_CUDA_DISABLE_GRAPHS=1` from a
 config on the strength of this alone** — this is one retest, not a disproof — but the throughput
 cost is real enough that it's worth a longer soak test before trusting either claim as final.
 
-**Net assessment:** the model is in a better state than either shelve decision or the
-2026-09-01 entry above suggests — MTP works, is coherent, and the ON_DEVICE fix (harmless,
+**Net assessment (2026-09-02):** the model is in a better state than either shelve decision or
+the 2026-09-01 entry above suggests — MTP works, is coherent, and the ON_DEVICE fix (harmless,
 just not a lever here) plus this retest narrow what's actually still open to exactly one
 question: is `GGML_CUDA_DISABLE_GRAPHS=1` still needed on this hardware, or was it already
 fixed and the requirement is now stale documentation. Everything else (long-context coherence,
 multi-turn + MTP interaction, ROCm 10.1 viability) checked out clean in this pass.
+
+### Finding 2 continued (2026-09-03) — still did not reproduce, across a wider matrix; a
+### different, real bug found instead
+
+Pushed further on the same open question, on `build-rocm-eogfix` (kintsugi @ `189ed9bef` plus
+the EOG-checkpoint fix above — inert for this purpose, doesn't touch graph capture) with graphs
+left enabled throughout (no `GGML_CUDA_DISABLE_GRAPHS`):
+
+- **Single-stream (`-np 1`, matching production), wider draft window, longer generation:**
+  `--spec-draft-n-max 8` (vs. production's 3–4), a dense adversarial code-generation prompt
+  (full red-black tree implementation, no repetition to hide behind), 3800 tokens in one
+  continuous generation, 4362 draft tokens proposed / 2919 accepted (thousands of hipCUB TOP_K
+  calls). Output scanned end-to-end (not just head/tail): zero non-printable/control characters,
+  no corruption signature, coherent Python throughout, ~21 t/s.
+- **Multi-turn conversations, natural EOG stops:** 16 turns total (the EOG-fix verification
+  above), both `--spec-draft-n-max 3` and `8`, all with graphs enabled — clean throughout.
+- **Concurrent multi-stream (`--parallel 4`), the one dimension the 2026-09-02 entry above
+  didn't try:** 4-way concurrent requests across code/prose/JSON/hex prompt types, several
+  rounds. No garbage token IDs, no `Invalid input batch`, no crashes — but see below.
+
+Across everything tried this session and the 2026-09-02 session before it (single-stream up to
+3800 tokens, up to ~56K context, 4-turn and 16-turn conversations, `--spec-draft-n-max` 3 through
+8, and now 4-way concurrency) — **zero reproductions of the originally-reported garbage-token-IDs
+signature, with graphs enabled throughout.** This still isn't a disproof (a rarer trigger than
+anything tried remains possible), but the evidence has now accumulated across two sessions and
+a materially wider test matrix without a single hit, against a real, measured ~30–35% throughput
+cost for keeping `GGML_CUDA_DISABLE_GRAPHS=1` set. Recommendation: worth an operator-supervised
+trial of removing the flag from a production config (e.g. `qwen38-27b`, already MTP-enabled) with
+normal traffic and close output monitoring for a period, rather than either keeping the flag
+forever on the strength of one now-unreproducible 2026-09-01 finding, or removing it unilaterally
+from this session.
+
+**A different, real, reproducible bug was found instead, while probing the concurrency
+dimension** — content cross-contamination between concurrent MTP slots. With 4 concurrent
+requests carrying clearly distinct prompts (e.g. quicksort code, a Matrix class, "the Roman
+Empire...", "the CAP theorem..."), responses would drift into content that only makes sense in
+a *different* slot's request — e.g. a quicksort-completion response drifting into "Caesar's
+assassination in 44 BC", or a CAP-theorem response drifting into `def __arr) + right\n    return
+quick_sort(arr)`. Output stays valid UTF-8 with no garbage-token signature, which is arguably
+worse: it reads as plausible, on-topic-adjacent text rather than obviously broken. **Confirmed to
+reproduce identically with `GGML_CUDA_DISABLE_GRAPHS=1` set** (control run, same prompts, same
+`--parallel 4`) — so this is unrelated to HIP graph capture, a separate, apparently undocumented
+`--parallel` + MTP interaction bug, most likely in how PR #27836's still-draft code handles the
+draft model's own per-sequence state across concurrent slots. Ruled out as a client-side
+test-harness artifact: requests use `ThreadPoolExecutor.submit(call, i, p)` (arguments bound at
+submit time, not late-bound), and a control test with maximally-repetitive prompts (e.g. "write
+ROCKET forty times" vs. "write BANANA forty times" concurrently) showed zero contamination across
+3 rounds — the effect is real but needs enough content complexity to surface, which is also why a
+casual smoke test wouldn't have caught it.
+
+**Does not affect Tohil's production catalog today** — every MTP-using config there
+(`qwen36-35b-a3b`, `qwen38-27b`/`-rocm`/`-vk`, both `gemma4-26b-a4b` configs) runs `--parallel 1`
+exclusively (see `docs/v5-ops-sprints...` / the ai-mode catalog, not this repo). Left as a
+documented, reproducible finding rather than chased into a fix — out of scope for this session
+(explicitly deferred per the ai-mode CLAUDE.md: concurrent serving for qwen4exp specifically is
+adjacent to the separate vLLM-integration track, and #28019's `--parallel`-only rollback gap is
+already known/deliberately parked for the same reason). Worth an upstream report if/when someone
+picks up concurrent MTP serving; not filed from this session.
 
 ## Quick start
 
