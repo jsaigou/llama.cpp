@@ -2356,6 +2356,39 @@ private:
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
 
+    // Kintsugi: for hybrid/recurrent models, a checkpoint made only during prompt processing
+    // is not enough - the recurrent/SSM state cannot be rolled back to an arbitrary position,
+    // so the *end* of a generated turn needs its own checkpoint too, or the next turn's prefix
+    // match falls back to whatever checkpoint was last made during the *previous* prompt and
+    // re-prefills the entire answer that was just generated. Called at every point generation
+    // stops (plain per-token path and the speculative/MTP accept path alike) so both leave the
+    // slot in the same restorable state. Must only be called when the underlying context memory
+    // genuinely reflects tokens up to and including the stop point and nothing beyond it - see
+    // the EOG truncation in the speculative accept path below for why that's not automatic.
+    void save_generation_checkpoint(server_slot & slot) {
+        if (!is_hybrid_or_recurrent || params_base.n_ctx_checkpoints == 0 || slot.stats.n_gen == 0) {
+            return;
+        }
+
+        auto & ckpts = slot.prompt.checkpoints;
+        if (!ckpts.empty() && ckpts.back().is_generation_checkpoint) {
+            ckpts.pop_back();
+        }
+
+        auto * mem = llama_get_memory(ctx_tgt);
+        const auto pos_min = llama_memory_seq_pos_min(mem, slot.id);
+        const auto pos_max = llama_memory_seq_pos_max(mem, slot.id);
+        const int64_t n_tokens_cur = slot.stats.n_prompt_processed + slot.stats.n_gen;
+
+        create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
+
+        if (!ckpts.empty()) {
+            ckpts.back().is_generation_checkpoint = true;
+        }
+
+        SLT_DBG(slot, "%s", "saved generation checkpoint\n");
+    }
+
     // returns false to decline the task, it is offered again after the decode is done
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only reading the server state is safe
@@ -3897,22 +3930,7 @@ private:
                 // release slot because of stop condition
                 slot.print_timings();
                 send_final_response(slot);
-                // Kintsugi: save generation checkpoint for hybrid/recurrent models
-                if (is_hybrid_or_recurrent && params_base.n_ctx_checkpoints > 0 && slot.stats.n_gen > 0) {
-                    auto & ckpts = slot.prompt.checkpoints;
-                    if (!ckpts.empty() && ckpts.back().is_generation_checkpoint) {
-                        ckpts.pop_back();
-                    }
-                    auto * mem = llama_get_memory(ctx_tgt);
-                    const auto pos_min = llama_memory_seq_pos_min(mem, slot.id);
-                    const auto pos_max = llama_memory_seq_pos_max(mem, slot.id);
-                    const int64_t n_tokens_cur = slot.stats.n_prompt_processed + slot.stats.n_gen;
-                    create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
-                    if (!ckpts.empty()) {
-                        ckpts.back().is_generation_checkpoint = true;
-                    }
-                    fprintf(stderr, "Kintsugi: saved generation checkpoint\n");
-                }
+                save_generation_checkpoint(slot);
                 slot.release();
 
                 return;
@@ -3947,6 +3965,41 @@ private:
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
+
+                // Kintsugi/fix (ggml-org/llama.cpp#28049): `accepted` was verified in one batch
+                // decode, so every token in it - not just the ones the caller ends up wanting -
+                // is already baked into ctx_tgt's memory. For a hybrid/recurrent model that
+                // memory can never be trimmed back to an arbitrary position (only restored from
+                // a checkpoint), so if an EOG token lands anywhere in here except the very end,
+                // whatever comes after it would sit in memory unaccounted for and undo-able:
+                // save_generation_checkpoint() below would then checkpoint a position past the
+                // real stop point, and the next turn's cache restore would be silently wrong.
+                // Truncate `accepted` at the first EOG among the actually-decoded tokens (i.e.
+                // excluding the still-undecoded bonus token at the end - keeping it clean needs
+                // no rollback) so this is handled by the exact same restore-checkpoint-and-replay
+                // path a few lines below already uses for verification-rejected draft tokens:
+                // from the context's point of view, "accepted but past EOG" and "rejected by
+                // verification" both just mean "roll back and only replay a shorter prefix".
+                // Stop conditions decided inside process_token() itself (stop strings, budget/
+                // indentation limits) aren't covered - they need generated_text to evaluate and
+                // can't be predicted from the raw token id alone.
+                //
+                // Only truncate if the EOG token isn't already the *last* decoded one - if it is
+                // (i == accepted.size() - 2, i.e. only the still-undecoded bonus follows it), the
+                // round is already clean: nothing after it is baked into memory, and the per-token
+                // loop below will stop generation there correctly on its own. Truncating anyway
+                // would force a rollback-and-replay whose replay deterministically lands on this
+                // exact same EOG token again, over and over - a real infinite loop hit live while
+                // testing this fix (server hung at a fixed context position, thousands of restore
+                // cycles, ~9x throughput drop before it was caught).
+                for (size_t i = 0; i + 1 < accepted.size(); ++i) {
+                    if (llama_vocab_is_eog(vocab, accepted[i])) {
+                        if (i + 2 < accepted.size()) {
+                            accepted.resize(i + 1);
+                        }
+                        break;
+                    }
+                }
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
@@ -4038,6 +4091,7 @@ private:
                 if (!process_token(result, slot)) {
                     slot.print_timings();
                     send_final_response(slot);
+                    save_generation_checkpoint(slot);
                     slot.release();
 
                     return;
