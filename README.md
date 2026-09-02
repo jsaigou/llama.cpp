@@ -89,9 +89,67 @@ Q8_0 draft sidecar, 32K context, greedy decode, 400-token coding completion:**
 Draft acceptance ~86% (269–273/307–312 tokens accepted). Output verified coherent and
 correct on real coding prompts.
 
-**Not yet done:** multi-turn Kintsugi-cache stress test under MTP, long-context (>32K)
-verification, and a production catalog promotion decision. Upstream PR #27836 is still
-draft/unmerged — this fork tracks it, not a stable release.
+**Not yet done:** long-context (>32K) verification on this exact model/quant, and a
+production catalog promotion decision for `qwen38-flash-next` specifically. Upstream PR
+#27836 is still draft/unmerged — this fork tracks it, not a stable release.
+
+### 3. MTP checkpoint loss past EOG on hybrid models — fixed 2026-09-03
+
+**Status: fixed and merged into `kintsugi` (source tree only, see below).** This is
+[ggml-org/llama.cpp#28049](https://github.com/ggml-org/llama.cpp/issues/28049), and it is
+**not specific to Qwen3.8-Flash-Next** — it affects any hybrid/recurrent model served
+with `--spec-type draft-mtp`, which on Tohil's live catalog today already includes
+`qwen36-35b-a3b`, `qwen38-27b`/`-rocm`/`-vk`, and both `gemma4-26b-a4b` configs (all
+`visible`, all real production traffic).
+
+Root cause: a speculative-decode accept round that ends generation (EOG, or hitting
+`max_tokens`) never saved a Kintsugi generation checkpoint at all — the checkpoint
+mechanism that already exists for the plain per-token sampling path was never mirrored
+into the MTP accept loop. Since a hybrid/recurrent model's SSM/GDN state can't be
+trimmed back to an arbitrary position (only restored from a checkpoint), the *next*
+turn's prefix match fell back to whatever checkpoint was last made during the
+*previous* prompt and silently re-prefilled the entire answer that had just been
+generated — defeating Kintsugi's whole cross-turn cache-reuse value proposition for
+exactly the multi-turn + MTP combination this fork exists to serve.
+
+The fix (`tools/server/server-context.cpp`, see the commit for the full writeup) has
+two parts: (1) extract the existing checkpoint-on-stop logic into a shared
+`save_generation_checkpoint()` and call it from the MTP accept loop's stop branch too;
+(2) verification-accepted draft tokens are already fully decoded into `ctx_tgt`'s
+memory as one batch before per-token stop-checking even runs, so if the model's EOG
+token lands anywhere in that batch except the very last decoded position, whatever
+comes after it is stranded in memory and un-trimmable — a checkpoint taken naively at
+that point would silently record a position past the real stop. A pre-scan for EOG
+among the verified tokens forces the *existing* checkpoint-restore-and-replay path
+(already used for verification-rejected drafts) to redo the round at the correct size
+instead, rather than inventing a new rollback mechanism.
+
+A real bug was found and fixed in the fix itself while verifying live on Tohil:
+truncating on *any* EOG match, even one already at the last decoded position (i.e.
+nothing stranded, nothing to fix), forced a pointless rollback+replay whose replay
+deterministically reproduces the identical EOG token again — a genuine infinite loop,
+caught live as ~2500 repeated checkpoint restores stuck at one fixed context position
+and a ~9x throughput drop, before the corrected version (only roll back when a decoded
+token is genuinely stranded after the EOG) was verified clean.
+
+**Verified live on Tohil** against Qwen3.8-Flash-Next with `--spec-type draft-mtp`, both
+`--spec-draft-n-max 3` and `8`: 16 total turns across two multi-turn conversations, most
+ending via a real EOG stop, show `cache_n` climbing steadily turn-over-turn and
+`prompt_n` staying in the low hundreds even past 2000 tokens of context — instead of
+re-processing most of the prior answer, confirmed as a live control against unmodified
+`kintsugi @ 189ed9bef` (turn-2 prefill ratio 0.25–0.52 of the full prior context, i.e.
+re-prefilling roughly a quarter to half of everything generated so far). No
+checkpoint-restore runaway, no asserts, unchanged throughput (~25–29 t/s, matching
+baseline), coherent output throughout. Full detail: commit on
+`fix/qwen4exp-eog-checkpoint`, merged into `kintsugi` at the source level.
+
+**Not yet deployed:** this only advances the tracked source tree
+(`/opt/tohil/llama.cpp-kintsugi`, now ahead of the running `build-rocm-new` binary by
+this fix). Deploying it means rebuilding and restarting the live production binary
+(`build-rocm-new`, catalog `builds.id=10`) — deliberately left as an explicit operator
+decision rather than done unilaterally, given it's the binary serving real traffic.
+Also not yet pushed to GitHub (`origin/kintsugi`) — Tohil has no cached push credentials
+for `jsaigou/llama.cpp`, same gap noted below for the MTP-ondevice branch.
 
 ### Updating this fork
 
