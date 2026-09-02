@@ -108,6 +108,63 @@ git cherry-pick <qwen4exp-mtp-commit-range>
 # already-superseded-test-case conflicts, not semantic ones)
 ```
 
+### 3. Experimental branch: `experiment/qwen4exp-mtp-ondevice` (2026-09-02)
+
+**Status: findings recorded, not merged to `kintsugi`.** Branch + worktree at
+`/opt/tohil/llama.cpp-kintsugi-rocm10`, built as `build-rocm-exp` against the same ROCm-TheRock
+10.1 toolchain as `build-rocm-new`. Two commits on top of `kintsugi` @ `189ed9bef`:
+
+1. `server: keep speculative checkpoints on device (ON_DEVICE)` — upstream's
+   [ggml-org/llama.cpp#27836](https://github.com/ggml-org/llama.cpp/pull/27836) thread
+   (JayToltTech, 2026-08-31) root-caused a 4x MTP slowdown on Vulkan/gfx1151 to the server
+   taking a full host-side recurrent-state checkpoint every speculative round (`qwen4exp` is
+   classified `COMMON_CONTEXT_SEQ_RM_TYPE_FULL`), and published a 6-line fix
+   (`LLAMA_STATE_SEQ_FLAGS_ON_DEVICE` at the six `spec_ckpt` call sites in
+   `tools/server/server-context.cpp`) that measured 4.33→16.08 t/s at 70k ctx on Vulkan and
+   +61% on CUDA. Applied here verbatim from
+   [JayToltTech/llama.cpp#1](https://github.com/JayToltTech/llama.cpp/pull/1).
+2. `qwen4exp: direct reads for the lazy PLE table` — clean cherry-pick of
+   [ggml-org/llama.cpp#28136](https://github.com/ggml-org/llama.cpp/pull/28136) (coder543,
+   open). Opt-in via `-lzm on-direct`; inactive in all testing below (not passed).
+
+**Finding 1 — ON_DEVICE has no measurable effect on this hardware.** A/B'd against the
+unmodified `build-rocm-new` binary (same commit, same everything else), at both 32K context
+(28.8–29.0 t/s both builds, identical 220/345 draft acceptance) and a real ~56K-token context
+(18.4–20.0 t/s patched vs. 18.7–19.9 t/s control, identical 177/264 and 179/261 acceptance).
+Tohil is a **unified-memory APU** (`GGML_HIP_UMA=ON`) — no PCIe hop between host and device —
+architecturally closer to the Metal case in the upstream thread (where the same fix measured
+neutral: "the host-path state save is close to free") than to the discrete Vulkan/CUDA cards
+where it was a 4–5x win. The fix is correct and harmless to carry, but on this class of hardware
+it isn't the lever. 128K was not separately retested given how tightly 32K and 56K already
+agreed.
+
+**Finding 2 — the documented `GGML_CUDA_DISABLE_GRAPHS=1` requirement did not reproduce.**
+Re-tested the exact condition described in §2 above (garbage token IDs under HIP graph capture
+without the flag) on both `build-rocm-new` (unmodified) and `build-rocm-exp`, with the
+checkpoint mechanism confirmed actually firing (17 create/restore cycles logged at `-lv 5` in a
+150-token generation; thousands more across all runs below) — every run stayed coherent:
+- 32K ctx, 2 runs × 2 builds, 400 tokens each: coherent throughout, ~19–22 t/s (vs. ~28.8–29 t/s
+  with the flag set — **disabling graphs costs ~30–35% throughput**, so this isn't a free
+  workaround).
+- 32K ctx, 1500-token generation (887/1279 draft accepted): coherent throughout, no divergence.
+- 4-turn conversation exercising Kintsugi cross-turn cache reuse together with MTP: correct
+  cross-turn recall, no corruption.
+
+This directly contradicts the "hardware-verified... nobody has reported it" framing of the
+requirement above. Possible explanations, none confirmed: an intervening fix already in this
+fork's own #27941/#27977/#28068 follow-ups since whatever build first hit the bug; a
+driver/thermal state difference between sessions; or a real but rarer trigger condition this
+retest didn't happen to hit. **Do not remove `GGML_CUDA_DISABLE_GRAPHS=1` from any production
+config on the strength of this alone** — this is one retest, not a disproof — but the throughput
+cost is real enough that it's worth a longer soak test before trusting either claim as final.
+
+**Net assessment:** the model is in a better state than either shelve decision or the
+2026-09-01 entry above suggests — MTP works, is coherent, and the ON_DEVICE fix (harmless,
+just not a lever here) plus this retest narrow what's actually still open to exactly one
+question: is `GGML_CUDA_DISABLE_GRAPHS=1` still needed on this hardware, or was it already
+fixed and the requirement is now stale documentation. Everything else (long-context coherence,
+multi-turn + MTP interaction, ROCm 10.1 viability) checked out clean in this pass.
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
