@@ -181,9 +181,69 @@ binaries kept as `*-pre-eogfix-20260903`, nothing deleted). Live-verified via th
 `forge load` path against Qwen3.8-Flash-Next, not just a standalone bypass — see
 `progress.md`'s 2026-09-03 entries for the full narrative, including a second, more serious
 bug this same verification pass surfaced (`GGML_CUDA_ENABLE_UNIFIED_MEMORY`, see this
-README's `GGML_CUDA_DISABLE_GRAPHS` section above). Still not pushed to GitHub
-(`origin/kintsugi`) — Tohil has no cached push credentials for `jsaigou/llama.cpp`, same gap
-noted below for the MTP-ondevice branch.
+README's `GGML_CUDA_DISABLE_GRAPHS` section above). `kintsugi` and this branch were both pushed
+to GitHub 2026-09-03 despite Tohil having no cached push credentials for `jsaigou/llama.cpp`:
+`git bundle create` on Tohil, transferred to a machine with a working `gh`-authenticated
+credential, cloned `origin` fresh there (Tohil's own clone is shallow, so a bundle built from it
+can't reconstruct standalone), pushed from there.
+
+### 4. QSA in the MTP draft head — wired and correctly implemented, but not activated
+
+**Status: reverted, safe, blocked on an upstream reserve-pass gap — see below before touching
+this again.** PR #27836's own code comment calls the MTP draft head's dense attention a "v1
+simplification" with a `TODO: wire up QSA here`. Section 2 above always attended densely
+regardless of `dsv4_compress_ratios`; this branch wires the real check in, mirroring the trunk's
+`build_layer_attn` branch exactly (same `build_qsa_top_k`/`build_attn_qsa` calls, same
+eligibility check) instead of inventing new machinery.
+
+**The wiring itself works and is committed** (`d060550dc` on this branch — the actual code, not
+reverted). With both available draft GGUFs, `dsv4_compress_ratios[il]` reads 0 at the MTP
+block's own index — traced to upstream's own `qwen4exp.py` converter, which has
+`supports_mtp_export = False` and builds this whole array from `num_hidden_layers` (the trunk)
+with no notion of an MTP block at all. No conversion path, official or community, has ever had
+anywhere to write a ratio for it. Per Alibaba's own architecture description the MTP module
+"replaces its full-Attention layers with QSA" — the *intended* design uses sparse attention
+there; dense is a real simplification relative to the source model, not just caution. With the
+eligibility check correctly evaluating false against real GGUF data, this lands as a verified,
+harmless no-op: builds, loads, generates correct output, no regression against the dense-path
+baseline.
+
+**Making it actually activate is where this gets blocked, not fixed.** A heuristic fallback
+(borrow a real ratio from the file's own trunk entries; if the whole array is zero — checked
+directly, a detached draft-only export can carry an all-zero `compress_ratios` across every
+entry, not just the MTP slot — fall back to `4`, the model's own real full-attention ratio,
+confirmed via `gguf_dump` against two independent files) was built, tried, and found to crash at
+model load. Root-caused with direct instrumentation (constructors, `next()`, `get_n_stream()`
+in `llama-memory-hybrid-idx.cpp`, plus `graph_reserve()` itself), not guessed:
+
+1. The crash isn't in real serving. It's `common_params_fit_impl`/
+   `common_get_device_memory_data_impl` — the memory-sizing pass that estimates GPU memory
+   *before* real contexts are built. A `GRAPHRSV-DIAG` trace confirmed 39 straight successful
+   `get_n_stream()` calls against a correctly-constructed context (`n_tokens=512` shape) before
+   a **different**, never-through-any-constructor object showed up for a separate `n_tokens=1`
+   single-token probe shape, with `i_cur` reading as raw uninitialized garbage
+   (`GGML_ASSERT(i_cur < ns_ubatch.size())` in `get_n_stream()`).
+2. Patched to match this codebase's own established precedent instead of fixing the probe's
+   construction path directly — the reserve constructor's own comment already documents that an
+   under-reserved worst case is tolerated ("without it the reserved worst case is the dense
+   graph, so ggml-alloc must grow the buffer on the first decode"). `get_n_stream()` returning
+   `1` instead of asserting when `ns_ubatch` is empty removed the abort.
+3. That exposed a **second**, deeper crash one function further into the exact same code path: a
+   real `SIGSEGV` in `llama_kv_cache::cpy_k()`, called from `build_qsa_top_k()` right after the
+   now-successful `get_n_stream()` call, confirmed via `coredumpctl` + `gdb bt` (not guessed) and
+   reproduced twice with a fresh, non-reused log file both times. The underlying indexer KV
+   cache for that specific probe object isn't genuinely ready to accept a write, not just
+   missing a stream count.
+
+Both fixes were reverted (`git checkout --`) rather than left in a partially-working state —
+continuing to patch symptom-by-symptom without more certainty each fix is complete risks a third
+crash one level further down. This branch sits at `d060550dc`, the wiring alone, verified clean.
+**Not a bug in this fork, in either draft GGUF, or in the wiring above** — a genuine,
+upstream-owned gap in `common_params_fit_impl`'s memory-context construction for the MTP graph
+type specifically, unexercised until this session because no model has ever shipped a nonzero
+MTP compression ratio before. Needs real debugger access or upstream input to take further, not
+more printf-and-rebuild cycles. Full narrative with exact backtraces: the `ai-mode` repo's
+`progress.md`, 2026-09-03 entries (search "QSA-in-MTP").
 
 ### Updating this fork
 
