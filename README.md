@@ -181,9 +181,13 @@ binaries kept as `*-pre-eogfix-20260903`, nothing deleted). Live-verified via th
 `forge load` path against Qwen3.8-Flash-Next, not just a standalone bypass — see
 `progress.md`'s 2026-09-03 entries for the full narrative, including a second, more serious
 bug this same verification pass surfaced (`GGML_CUDA_ENABLE_UNIFIED_MEMORY`, see this
-README's `GGML_CUDA_DISABLE_GRAPHS` section above). Still not pushed to GitHub
-(`origin/kintsugi`) — Tohil has no cached push credentials for `jsaigou/llama.cpp`, same gap
-noted below for the MTP-ondevice branch.
+README's `GGML_CUDA_DISABLE_GRAPHS` section above). Pushed to GitHub 2026-09-03 despite Tohil
+having no cached push credentials for `jsaigou/llama.cpp`: `git bundle create` on Tohil, the
+bundle transferred to a machine with a working `gh`-authenticated credential, cloned `origin`
+fresh there (Tohil's own clone is shallow, so a bundle built from it can't reconstruct
+standalone — cloning `origin` first and fetching the bundle's new commits on top sidesteps
+that), pushed from there. `origin/kintsugi` now matches Tohil exactly (verified via
+`git ls-remote`); same relay used for the other branches below.
 
 ### Updating this fork
 
