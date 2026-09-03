@@ -522,10 +522,26 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
 // reusing the trunk's LM head. The wide post-block residual is exported as t_h_nextn so the
 // speculative driver can feed it straight back in for the next draft step.
 //
-// v1 simplification: the block attends densely. The trunk's QSA only prunes context past a
-// 2048-token budget, so dense is a numerical superset; drafts are verified by the target
-// either way. The indexer tensors are still loaded so the GGUF stays complete.
-// TODO: wire up QSA here for long-context draft fidelity.
+// QSA wired up 2026-09-03, mirroring the trunk's build_layer_attn branch exactly (same
+// qsa-eligibility check, same build_qsa_top_k / build_attn_qsa calls, same cur/inp_pos/il
+// threaded through) instead of always attending densely. Dense was never a correctness issue
+// (a numerical superset of QSA, and every draft is verified by the full target model either
+// way) - just needless full-context cost on every draft step at long context, whenever QSA is
+// actually eligible to fire.
+//
+// Currently a verified-safe no-op with both available draft GGUFs (drluoto's and the
+// Q4_K_M sidecar): the MTP block is a trailing entry past the trunk in n_layer_all
+// (il == n_layer()), and the loader gives it the same full-attention + indexer tensor set as
+// any other layer (blk.<il>.indexer.{q,k}_proj/{q,k}_norm - present in both files, confirmed
+// via gguf_dump), but dsv4_compress_ratios[il] reads 0 in both - checked directly, not
+// inferred: the trunk's own ratio pattern (every 4th layer gets a nonzero ratio) simply
+// doesn't land on the MTP block's own index in either file's compress_ratios array. This is
+// the model's own exported metadata, not a bug in this fork or in the draft GGUFs - the base
+// architecture was apparently never designed to run the draft head through QSA at all. The
+// qsa-eligibility check correctly, safely evaluates false and falls through to the exact same
+// dense path as before (verified live: builds, loads, generates correct output, no
+// regression). Will start actually pruning context the moment any draft export assigns the
+// MTP block a real ratio - no further code change needed.
 llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params) :
     graph(model, params, no_build_t{}) {
     GGML_ASSERT(hparams.n_layer_nextn > 0 && "QWEN4EXP MTP requires n_layer_nextn > 0");
@@ -605,9 +621,21 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
             &inject, il);
     cb(cur, "mtp_hc_attn_pre", il);
 
-    // ---- dense attention, mirroring the trunk's full-attention branch ----
+    // ---- attention, mirroring the trunk's build_layer_attn exactly (dense or QSA) ----
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
+
+    // build_attn_inp_kv() (used for inp_attn below, unlike the trunk's build_inp_mem_hybrid())
+    // narrows its own stored mctx down to plain llama_kv_cache_context, discarding the hybrid
+    // typing - downcast from the graph's own top-level mctx member instead, exactly as
+    // build_inp_mem_hybrid() does internally before its own further downcast (see the trunk's
+    // build() above); qwen4exp always builds llama_memory_hybrid_idx for both trunk and MTP
+    // graphs (same underlying KV cache, just a different graph shape on top), so this is safe.
+    const auto * mctx_hyb = static_cast<const llama_memory_hybrid_idx_context *>(mctx);
+    const bool   qsa       = mctx_hyb->get_idx() != nullptr && hparams.dsv4_compress_ratios[il] > 0;
+    ggml_tensor * top_k    = qsa
+        ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp_attn->get_kq_mask(), sections, il)
+        : nullptr;
 
     ggml_tensor * Qcur_full = build_lora_mm(layer.wq, cur, layer.wq_s);
     cb(Qcur_full, "mtp_Qcur_full", il);
@@ -647,9 +675,11 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     const float kq_scale = hparams.f_attention_scale == 0.0f
             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
-    cur = build_attn(inp_attn,
-            nullptr, nullptr, nullptr,
-            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+    cur = top_k
+        ? build_attn_qsa(inp_attn, Qcur, Kcur, Vcur, top_k, kq_scale, il)
+        : build_attn(inp_attn,
+              nullptr, nullptr, nullptr,
+              Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
     cb(cur, "mtp_attn_pregate", il);
 
     cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
