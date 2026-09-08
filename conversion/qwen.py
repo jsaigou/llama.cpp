@@ -290,6 +290,7 @@ class _QwenMtpMixin:
     tensor_map: gguf.TensorNameMap
     no_mtp: bool
     mtp_only: bool
+    mtp_shared_embd: bool
     _original_block_count: int | None = None
     opt_num_mtp_layers: int = 0
 
@@ -338,10 +339,17 @@ class _QwenMtpMixin:
             elif len(parts) == 3 and parts[1] in remapper:
                 name = f"model.layers.{cls._original_block_count}.{remapper[parts[1]]}.{parts[2]}"
         elif cls.mtp_only:
-            keep = name in (
+            # --mtp-shared-embd: the draft borrows embed_tokens/norm/lm_head from the
+            # target at load time (llama-context.cpp requires ctx_other when they're
+            # absent from the draft's own GGUF) instead of carrying its own copy. Only
+            # qwen4exp's C++ side (qwen4exp_shared_model) knows how to borrow these two;
+            # model.hyper_connection_mixer. is left out of this gate deliberately, since
+            # no borrowing path exists for it and this flag must not silently drop a
+            # tensor nothing at load time can source another way.
+            keep = (not cls.mtp_shared_embd and name in (
                 "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
                 "embed_tokens.weight", "norm.weight",
-            ) or name.startswith("model.hyper_connection_mixer.")
+            )) or name.startswith("model.hyper_connection_mixer.")
             if not keep:
                 return None
         return name, gen
