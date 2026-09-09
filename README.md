@@ -78,7 +78,19 @@ used. Removed from Tohil's four slot env files 2026-09-03 (`/etc/sysconfig/forge
 — see `progress.md`'s "GGML_CUDA_ENABLE_UNIFIED_MEMORY was the actual culprit" entry and
 this repo's `CLAUDE.md` "Unified Memory" bullet for the full writeup); `GGML_CUDA_DISABLE_GRAPHS=1`
 should not be needed on any ROCm+MTP config on this host now that the actual trigger is gone.
-Not yet re-verified above ~90 GB or on a non-hybrid/non-MTP ROCm mode.
+
+**Broadened and confirmed fleet-wide, 2026-09-08.** The original fix above was soaked on
+exactly one 8-turn Flash-Next conversation. Re-verified more thoroughly before treating it as
+settled: 16 total turns across two separate multi-turn Flash-Next conversations (`--spec-type
+draft-mtp`, `--spec-draft-n-max` both 3 and 8) via real `v1/chat/completions` traffic through
+a0, most turns ending via a real EOG stop — `cache_n` climbs steadily turn-over-turn and
+`prompt_n` stays in the low hundreds even past 2000 tokens of context, confirmed against an
+unmodified-fork control run. Separately, a synthetic near-ceiling depth test reached
+**231,370 prompt tokens (88% of the 262144 ceiling)** — deeper than anything tested before —
+with a needle fact retrieved exactly correct, `finish_reason: stop`, zero truncation, no
+kernel faults, GPU back to 56°C after. `GGML_CUDA_DISABLE_GRAPHS=1` confirmed unnecessary
+fleet-wide, not just for the original test case. Still not tested: concurrent requests (every
+config here runs `--parallel 1`) and anything above ~231K tokens.
 
 <details>
 <summary>Original 2026-09-01 finding (superseded diagnosis, kept for the record)</summary>
@@ -117,18 +129,22 @@ Q8_0 draft sidecar, 32K context, greedy decode, 400-token coding completion:**
 Draft acceptance ~86% (269–273/307–312 tokens accepted). Output verified coherent and
 correct on real coding prompts.
 
-**Not yet done:** long-context (>32K) verification on this exact model/quant, and a
-production catalog promotion decision for `qwen38-flash-next` specifically. Upstream PR
-#27836 is still draft/unmerged — this fork tracks it, not a stable release.
+**Long-context verification: done, 2026-09-08** (see the fleet-wide soak note above — 231K
+tokens, 88% of the 262144 ceiling, clean). **Production catalog decision: resolved
+2026-09-08** — `qwen38-27b` and its `-rocm`/`-vk` siblings were retired from the catalog
+entirely (operator call: Flash-Next is the better model), and `qwen38-flash-next` was
+promoted as the flagship config (`visible`, `verified`). Upstream PR #27836 is still
+draft/unmerged — this fork tracks it, not a stable release.
 
 ### 3. MTP checkpoint loss past EOG on hybrid models — fixed 2026-09-03
 
 **Status: fixed and merged into `kintsugi` (source tree only, see below).** This is
 [ggml-org/llama.cpp#28049](https://github.com/ggml-org/llama.cpp/issues/28049), and it is
 **not specific to Qwen3.8-Flash-Next** — it affects any hybrid/recurrent model served
-with `--spec-type draft-mtp`, which on Tohil's live catalog today already includes
-`qwen36-35b-a3b`, `qwen38-27b`/`-rocm`/`-vk`, and both `gemma4-26b-a4b` configs (all
-`visible`, all real production traffic).
+with `--spec-type draft-mtp`, which on Tohil's live catalog today includes
+`qwen36-35b-a3b`, `qwen38-flash-next`, and both `gemma4-26b-a4b` configs (all
+`visible`, all real production traffic — `qwen38-27b` and its `-rocm`/`-vk` siblings were
+retired from the catalog 2026-09-08, see the MTP section above).
 
 Root cause: a speculative-decode accept round that ends generation (EOG, or hitting
 `max_tokens`) never saved a Kintsugi generation checkpoint at all — the checkpoint
@@ -188,6 +204,27 @@ fresh there (Tohil's own clone is shallow, so a bundle built from it can't recon
 standalone — cloning `origin` first and fetching the bundle's new commits on top sidesteps
 that), pushed from there. `origin/kintsugi` now matches Tohil exactly (verified via
 `git ls-remote`); same relay used for the other branches below.
+
+### 4. Two parked performance investigations (2026-09-08/09) — real, correct, not production-ready
+
+Both hand-ported and building/loading correctly, both pushed to GitHub, neither merged into
+`kintsugi` — kept as separate branches to revisit if their upstream PRs stabilize.
+
+- **`perf/qwen4exp-qsa-pool`** (off Nathanw1014's PR#9, cross-fork from `firelzrd/llama.cpp`
+  since `git apply`/cherry-pick were infeasible against kintsugi's shallow, divergent history —
+  hand-ported instead): pools/caches a block's normalized+rotated QSA indexer key instead of
+  recomputing it every ubatch, plus two micro-opts. **Parked: no measured ROCm gain on Tohil's
+  hardware.** Correct and safe, just not worth carrying.
+- **`feature/qwen4exp-mtp-shared-embd`** (rebase onto ggml-org/llama.cpp#28243, "1.3-2x faster
+  MTP" via a restructured MTP tensor/GGUF format that lets a draft head borrow the target's
+  token-embeddings/output-norm/lm-head instead of carrying its own — needs a fresh model export,
+  not just a code port; a dedicated 28-of-131-shard, ~89 GB export was pulled for this).
+  Building and loading correctly, but this was flagged from the start as the riskiest phase
+  ("most likely to reopen the garbage-token/memory-corruption bug class already root-caused
+  once") — **parked after finding a real correctness bug**, not merged.
+
+Both branches are available to revisit if either upstream PR lands, or if someone wants to
+pick up the correctness bug from where it was left.
 
 ### Updating this fork
 
