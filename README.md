@@ -17,6 +17,70 @@
 
 </div>
 
+## This fork (jsaigou/llama.cpp)
+
+A working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a self-hosted
+inference host (AMD Strix Halo, Ryzen AI Max+ 395, `gfx1151`, 128 GB unified memory).
+**Current branch: `rebase/upstream-20261022`** — upstream `master` at `7170cad4d`
+(2026-10-22) plus two patches (below). The older `kintsugi` branch (based on upstream
+`458681e1d`, 2026-09-01) is kept untouched for rollback, along with its long-form notes.
+
+### Patches carried on top of upstream
+
+1. **Kintsugi — cross-turn KV cache reuse for hybrid/recurrent architectures**
+   (`tools/server/server-context.cpp`, `common/common.{h,cpp}`). Lets hybrid/recurrent
+   models (Qwen3.5/3.6 MoE, qwen4exp, ...) reuse cache across conversation turns instead of
+   re-prefilling the whole conversation: a dedicated generation-end checkpoint per turn,
+   preferred on restore, a GPU sync after partial-state restore, and checkpoints preserved
+   across a forced position reset. Production, stable.
+2. **MTP checkpoint loss past EOG** ([ggml-org/llama.cpp#28049](https://github.com/ggml-org/llama.cpp/issues/28049)).
+   A speculative-decode round that ended generation never saved a Kintsugi checkpoint, so
+   the next turn re-prefilled the entire answer just generated. Not specific to one model:
+   it hits any hybrid/recurrent model served with `--spec-type draft-mtp`. The fix shares one
+   `save_generation_checkpoint()` between the plain and speculative paths and forces the
+   existing restore-and-replay path when an EOG lands mid-batch.
+
+### What changed in the 2026-10-22 rebase
+
+- **The qwen4exp MTP patch set was dropped, not ported.** Upstream merged qwen4exp MTP
+  itself (#29761), so the 11 earlier community-PR commits (NextN head, converter, the
+  detached-head loader, the follow-up correctness fixes) are obsolete. The detached MTP
+  head GGUF (`mtp-*.gguf` via `--spec-draft-model`) loads unchanged on upstream.
+- **`--no-mmap` no longer exists.** Upstream removed `--mmap`/`--no-mmap`/`--mlock`/
+  `--direct-io` in favor of `--load-mode {auto,none,mmap,mlock,mmap+mlock}` (#28334).
+  `--no-mmap` becomes `--load-mode none`. Builds from September 2026 onward already accept
+  both spellings; builds from this rebase reject the old one.
+- **`preserve_reasoning` is on by default** for templates that support it (`--no-reasoning-preserve` to turn off).
+
+### Verification (Tohil, 2026-10-22/23, Qwen3.8-Flash-Next UD-Q3_K_XL + Q8_0 MTP head)
+
+ROCm build (TheRock 10.1, gfx1151), 262144 context, `--spec-type draft-mtp
+--spec-draft-n-max 3`, q8_0 KV, vision projector attached, 8 long multi-turn exchanges:
+
+| | previous `kintsugi` build | this branch |
+|---|---|---|
+| cache reuse by turn 8 (`cache_n`) | ~5,070 | ~5,070 |
+| new prompt tokens per turn | 24-35 | 24-35 |
+| decode | 16-18 t/s | 30-37 t/s |
+| image question | correct | correct |
+
+No aborts, faults, or checkpoint-restore loops. Decode is roughly doubled; the cause was
+not isolated (upstream's ROCm and qwen4exp kernel work since September is the likely source).
+
+### Hardware notes that outlived the old README
+
+- `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON` is **not** needed on this true-APU host and, combined
+  with HIP graph capture (any `--spec-type draft-mtp` config), causes a hard
+  `HSA_STATUS_ERROR_MEMORY_FAULT` in `k_get_rows_float`. It — not HIP graphs alone — was the
+  real trigger behind the old `GGML_CUDA_DISABLE_GRAPHS=1` requirement, which is therefore
+  unnecessary. `GGML_HIP_UMA` is a no-op CMake variable. A 90 GB model at full 262144 context
+  loads on plain `hipMalloc`.
+- Run `--parallel 1` for anything serving one long conversation at full context: `--parallel N`
+  *splits* the configured context across N slots.
+
+The full original write-up (diagnosis history, the 231K-token depth soak, the EOG-fix
+analysis) is in this README on the `kintsugi` branch.
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
