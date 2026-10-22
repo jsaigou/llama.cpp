@@ -13,237 +13,85 @@
 [![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
 [![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
 
-[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
 
 </div>
 
-## This fork (jsaigou/llama.cpp, branch `kintsugi`)
+## This fork (jsaigou/llama.cpp)
 
-This is a working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a
-self-hosted inference host running an AMD Strix Halo (Ryzen AI Max+ 395, `gfx1151`,
-128 GB unified memory). The `kintsugi` branch is rebased onto current upstream `master`
-periodically (last rebase: 2026-09-01, onto `458681e1d`) and carries two custom patch
-sets on top of stock upstream:
+A working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a self-hosted
+inference host (AMD Strix Halo, Ryzen AI Max+ 395, `gfx1151`, 128 GB unified memory).
+**Current branch: `rebase/upstream-20261022`** — upstream `master` at `7170cad4d`
+(2026-10-22) plus two patches (below). The older `kintsugi` branch (based on upstream
+`458681e1d`, 2026-09-01) is kept untouched for rollback, along with its long-form notes.
 
-### 1. Kintsugi — cross-turn KV cache reuse for hybrid/recurrent architectures
+### Patches carried on top of upstream
 
-**Status: production, stable.** One commit
-(`Kintsugi: cross-turn KV cache reuse for hybrid/recurrent architectures`) that lets
-hybrid/recurrent-architecture models (Qwen3.5 MoE, Qwen3.6, qwen4exp, etc.) reuse KV
-cache across conversation turns instead of reprocessing the full context every turn.
-In production use across multiple models on Tohil.
+1. **Kintsugi — cross-turn KV cache reuse for hybrid/recurrent architectures**
+   (`tools/server/server-context.cpp`, `common/common.{h,cpp}`). Lets hybrid/recurrent
+   models (Qwen3.5/3.6 MoE, qwen4exp, ...) reuse cache across conversation turns instead of
+   re-prefilling the whole conversation: a dedicated generation-end checkpoint per turn,
+   preferred on restore, a GPU sync after partial-state restore, and checkpoints preserved
+   across a forced position reset. Production, stable.
+2. **MTP checkpoint loss past EOG** ([ggml-org/llama.cpp#28049](https://github.com/ggml-org/llama.cpp/issues/28049)).
+   A speculative-decode round that ended generation never saved a Kintsugi checkpoint, so
+   the next turn re-prefilled the entire answer just generated. Not specific to one model:
+   it hits any hybrid/recurrent model served with `--spec-type draft-mtp`. The fix shares one
+   `save_generation_checkpoint()` between the plain and speculative paths and forces the
+   existing restore-and-replay path when an EOG lands mid-batch.
 
-### 2. Qwen3.8-Flash-Next (`qwen4exp`) MTP speculative decoding
+### What changed in the 2026-10-22 rebase
 
-**Status: experimental, hardware-verified but not yet in daily production use.**
-Upstream's `qwen4exp` architecture (Qwen3.8-Flash-Next) shipped without its 4B MTP
-(multi-token-prediction) draft head — the real performance lever for this model.
-This fork assembles the pieces needed to use it, from several in-flight upstream
-community PRs (none merged to `ggml-org/llama.cpp` as of this writing):
+- **The qwen4exp MTP patch set was dropped, not ported.** Upstream merged qwen4exp MTP
+  itself (#29761), so the 11 earlier community-PR commits (NextN head, converter, the
+  detached-head loader, the follow-up correctness fixes) are obsolete. The detached MTP
+  head GGUF (`mtp-*.gguf` via `--spec-draft-model`) loads unchanged on upstream.
+- **`--no-mmap` no longer exists.** Upstream removed `--mmap`/`--no-mmap`/`--mlock`/
+  `--direct-io` in favor of `--load-mode {auto,none,mmap,mlock,mmap+mlock}` (#28334).
+  `--no-mmap` becomes `--load-mode none`. Builds from September 2026 onward already accept
+  both spellings; builds from this rebase reject the old one.
+- **`preserve_reasoning` is on by default** for templates that support it (`--no-reasoning-preserve` to turn off).
 
-- [ggml-org/llama.cpp#27836](https://github.com/ggml-org/llama.cpp/pull/27836) —
-  `qwen4exp : add NextN/MTP draft head (--spec-type draft-mtp)` (draft, by
-  @rmonsurate)
-- [crusaderky's detached-head loader fix](https://github.com/crusaderky/llama.cpp/commit/a82a58a57fc307e5cec0dc68db64d143339be4f2) —
-  fixes a `blk.0` vs. `blk.38` tensor-naming mismatch that otherwise fails standalone
-  draft-model loading
-- The `mtp_only` export whitelist fix + hipCUB TOP_K integration
-  ([#26592](https://github.com/ggml-org/llama.cpp/pull/26592)) from
-  [@drluoto](https://github.com/drluoto)'s
-  [`strix-halo-flash-next`](https://github.com/drluoto/llama.cpp/tree/strix-halo-flash-next)
-  branch, which this fork's MTP work is based on
-- Follow-up correctness/decode fixes from
-  [#27941](https://github.com/ggml-org/llama.cpp/pull/27941),
-  [#27977](https://github.com/ggml-org/llama.cpp/pull/27977), and
-  [#28068](https://github.com/ggml-org/llama.cpp/pull/28068)
+### Verification (Tohil, 2026-10-22/23, Qwen3.8-Flash-Next UD-Q3_K_XL + Q8_0 MTP head)
 
-**Root cause found and fixed, 2026-09-03 — `GGML_CUDA_DISABLE_GRAPHS=1` is not actually
-needed; the real problem was `GGML_CUDA_ENABLE_UNIFIED_MEMORY`.** The original 2026-09-01
-finding below is kept verbatim for the record, but its diagnosis was wrong: the corruption
-isn't caused by HIP graph capture alone. It's caused by `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON`
-(a runtime env var, checked via `getenv()` in `ggml_cuda_device_malloc`, `ggml-cuda.cu` —
-switches the allocator from `hipMalloc` to `hipMallocManaged`) combined with HIP graph
-capture. Confirmed with a clean A/B/C isolation on Tohil, live: `-ngl 999 -ngld 999`, no
-unified-memory env var, graphs on → clean across 24+ turns. Same config plus the env var,
-graphs on → a hard `HSA_STATUS_ERROR_MEMORY_FAULT` page fault inside `k_get_rows_float`
-(the token-embedding lookup kernel) on the very first request, every time. Same config plus
-the env var plus `GGML_CUDA_DISABLE_GRAPHS=1` → clean again. The `GGML_HIP_UMA` CMake flag
-every kintsugi ROCm build has always passed alongside it turns out to be a complete no-op —
-grep the tree, it's never referenced by any `#if`/`#ifdef`, only sets a CMake cache variable.
-And the documented ~63 GB ceiling this env var is supposed to lift didn't reproduce either: a
-90 GB Flash-Next load at full 262144 context worked fine on plain `hipMalloc` alone, most
-likely because this is a true APU with no separate VRAM — the kernel's own GTT mechanism
-already gives the GPU broad system-RAM access regardless of which userspace allocator is
-used. Removed from Tohil's four slot env files 2026-09-03 (`/etc/sysconfig/forge-a{1,2,3,4}-env`
-— see `progress.md`'s "GGML_CUDA_ENABLE_UNIFIED_MEMORY was the actual culprit" entry and
-this repo's `CLAUDE.md` "Unified Memory" bullet for the full writeup); `GGML_CUDA_DISABLE_GRAPHS=1`
-should not be needed on any ROCm+MTP config on this host now that the actual trigger is gone.
+ROCm build (TheRock 10.1, gfx1151), 262144 context, `--spec-type draft-mtp
+--spec-draft-n-max 3`, q8_0 KV, vision projector attached, 8 long multi-turn exchanges:
 
-**Broadened and confirmed fleet-wide, 2026-09-08.** The original fix above was soaked on
-exactly one 8-turn Flash-Next conversation. Re-verified more thoroughly before treating it as
-settled: 16 total turns across two separate multi-turn Flash-Next conversations (`--spec-type
-draft-mtp`, `--spec-draft-n-max` both 3 and 8) via real `v1/chat/completions` traffic through
-a0, most turns ending via a real EOG stop — `cache_n` climbs steadily turn-over-turn and
-`prompt_n` stays in the low hundreds even past 2000 tokens of context, confirmed against an
-unmodified-fork control run. Separately, a synthetic near-ceiling depth test reached
-**231,370 prompt tokens (88% of the 262144 ceiling)** — deeper than anything tested before —
-with a needle fact retrieved exactly correct, `finish_reason: stop`, zero truncation, no
-kernel faults, GPU back to 56°C after. `GGML_CUDA_DISABLE_GRAPHS=1` confirmed unnecessary
-fleet-wide, not just for the original test case. Still not tested: concurrent requests (every
-config here runs `--parallel 1`) and anything above ~231K tokens.
-
-<details>
-<summary>Original 2026-09-01 finding (superseded diagnosis, kept for the record)</summary>
-
-**Known requirement — currently unexplained:** on Tohil's ROCm-TheRock 10.1 toolchain,
-the hipCUB TOP_K path produces garbage decoded token IDs (`Invalid input batch` /
-corrupted output) under HIP graph capture unless launched with
-`GGML_CUDA_DISABLE_GRAPHS=1`.
-
-**This is NOT the rocPRIM graph-capture crash discussed in PR #26592's review thread**
-(`DeviceSegmentedRadixSort` crashing with `operation not permitted when stream is
-capturing` on rocPRIM < 4.4.0 / ROCm < 7.13, per @Geramy's diagnosis there) — that bug
-is a hard crash, not silent corruption, and Tohil's toolchain already ships past the
-fix: rocPRIM and hipCUB are both **4.5.0** here, and the `is_graph_capture` guard
-(`rocprim/device/device_segmented_radix_sort.hpp`) is present in Tohil's headers,
-verified directly (not inferred from the version number). Checked PR #27836's full
-comment thread and searched `ggml-org/llama.cpp` issues for this exact failure mode
-(garbage/invalid decoded token IDs under MTP + HIP graphs) on 2026-09-01 — nobody has
-reported it. This looks like a separate, still-undocumented bug, most likely in the
-MTP draft/verify graph-capture interaction itself (very fresh, unreviewed draft-PR
-code) rather than the rocPRIM library issue. Not yet reported upstream. Standard ROCm
-7.1/7.2.3 builds per community reports in the PR thread do not need
-`GGML_CUDA_DISABLE_GRAPHS=1`, for what is evidently a different reason than Tohil does.
-
-</details>
-
-**Measured on Tohil (2026-09-01), gfx1151/ROCm, `Qwen3.8-Flash-Next-UD-Q3_K_XL` +
-[`drluoto/Qwen3.8-Flash-Next-MTP-GGUF`](https://huggingface.co/drluoto/Qwen3.8-Flash-Next-MTP-GGUF)
-Q8_0 draft sidecar, 32K context, greedy decode, 400-token coding completion:**
-
-| Config | Decode speed | vs. baseline |
+| | previous `kintsugi` build | this branch |
 |---|---|---|
-| No speculation | 22.06 t/s | — |
-| `--spec-type draft-mtp --spec-draft-n-max 3` | 34.5–34.7 t/s | **+56–57%** |
+| cache reuse by turn 8 (`cache_n`) | ~5,070 | ~5,070 |
+| new prompt tokens per turn | 24-35 | 24-35 |
+| decode | 16-18 t/s | 30-37 t/s |
+| image question | correct | correct |
 
-Draft acceptance ~86% (269–273/307–312 tokens accepted). Output verified coherent and
-correct on real coding prompts.
+No aborts, faults, or checkpoint-restore loops. Decode is roughly doubled; the cause was
+not isolated (upstream's ROCm and qwen4exp kernel work since September is the likely source).
 
-**Long-context verification: done, 2026-09-08** (see the fleet-wide soak note above — 231K
-tokens, 88% of the 262144 ceiling, clean). **Production catalog decision: resolved
-2026-09-08** — `qwen38-27b` and its `-rocm`/`-vk` siblings were retired from the catalog
-entirely (operator call: Flash-Next is the better model), and `qwen38-flash-next` was
-promoted as the flagship config (`visible`, `verified`). Upstream PR #27836 is still
-draft/unmerged — this fork tracks it, not a stable release.
+### Hardware notes that outlived the old README
 
-### 3. MTP checkpoint loss past EOG on hybrid models — fixed 2026-09-03
+- `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON` is **not** needed on this true-APU host and, combined
+  with HIP graph capture (any `--spec-type draft-mtp` config), causes a hard
+  `HSA_STATUS_ERROR_MEMORY_FAULT` in `k_get_rows_float`. It — not HIP graphs alone — was the
+  real trigger behind the old `GGML_CUDA_DISABLE_GRAPHS=1` requirement, which is therefore
+  unnecessary. `GGML_HIP_UMA` is a no-op CMake variable. A 90 GB model at full 262144 context
+  loads on plain `hipMalloc`.
+- Run `--parallel 1` for anything serving one long conversation at full context: `--parallel N`
+  *splits* the configured context across N slots.
 
-**Status: fixed and merged into `kintsugi` (source tree only, see below).** This is
-[ggml-org/llama.cpp#28049](https://github.com/ggml-org/llama.cpp/issues/28049), and it is
-**not specific to Qwen3.8-Flash-Next** — it affects any hybrid/recurrent model served
-with `--spec-type draft-mtp`, which on Tohil's live catalog today includes
-`qwen36-35b-a3b`, `qwen38-flash-next`, and both `gemma4-26b-a4b` configs (all
-`visible`, all real production traffic — `qwen38-27b` and its `-rocm`/`-vk` siblings were
-retired from the catalog 2026-09-08, see the MTP section above).
-
-Root cause: a speculative-decode accept round that ends generation (EOG, or hitting
-`max_tokens`) never saved a Kintsugi generation checkpoint at all — the checkpoint
-mechanism that already exists for the plain per-token sampling path was never mirrored
-into the MTP accept loop. Since a hybrid/recurrent model's SSM/GDN state can't be
-trimmed back to an arbitrary position (only restored from a checkpoint), the *next*
-turn's prefix match fell back to whatever checkpoint was last made during the
-*previous* prompt and silently re-prefilled the entire answer that had just been
-generated — defeating Kintsugi's whole cross-turn cache-reuse value proposition for
-exactly the multi-turn + MTP combination this fork exists to serve.
-
-The fix (`tools/server/server-context.cpp`, see the commit for the full writeup) has
-two parts: (1) extract the existing checkpoint-on-stop logic into a shared
-`save_generation_checkpoint()` and call it from the MTP accept loop's stop branch too;
-(2) verification-accepted draft tokens are already fully decoded into `ctx_tgt`'s
-memory as one batch before per-token stop-checking even runs, so if the model's EOG
-token lands anywhere in that batch except the very last decoded position, whatever
-comes after it is stranded in memory and un-trimmable — a checkpoint taken naively at
-that point would silently record a position past the real stop. A pre-scan for EOG
-among the verified tokens forces the *existing* checkpoint-restore-and-replay path
-(already used for verification-rejected drafts) to redo the round at the correct size
-instead, rather than inventing a new rollback mechanism.
-
-A real bug was found and fixed in the fix itself while verifying live on Tohil:
-truncating on *any* EOG match, even one already at the last decoded position (i.e.
-nothing stranded, nothing to fix), forced a pointless rollback+replay whose replay
-deterministically reproduces the identical EOG token again — a genuine infinite loop,
-caught live as ~2500 repeated checkpoint restores stuck at one fixed context position
-and a ~9x throughput drop, before the corrected version (only roll back when a decoded
-token is genuinely stranded after the EOG) was verified clean.
-
-**Verified live on Tohil** against Qwen3.8-Flash-Next with `--spec-type draft-mtp`, both
-`--spec-draft-n-max 3` and `8`: 16 total turns across two multi-turn conversations, most
-ending via a real EOG stop, show `cache_n` climbing steadily turn-over-turn and
-`prompt_n` staying in the low hundreds even past 2000 tokens of context — instead of
-re-processing most of the prior answer, confirmed as a live control against unmodified
-`kintsugi @ 189ed9bef` (turn-2 prefill ratio 0.25–0.52 of the full prior context, i.e.
-re-prefilling roughly a quarter to half of everything generated so far). No
-checkpoint-restore runaway, no asserts, unchanged throughput (~25–29 t/s, matching
-baseline), coherent output throughout. Full detail: commit on
-`fix/qwen4exp-eog-checkpoint`, merged into `kintsugi` at the source level.
-
-**Deployed 2026-09-03, with operator sign-off.** Rebuilt `build-rocm-new` (`builds.id=10`) and
-`build-vulkan-new` (`builds.id=9`) from this fix, caught a real RPATH regression in the rebuild
-before it caused an outage (the original builds had `-DCMAKE_INSTALL_RPATH='$ORIGIN;...'`
-set — a plain rebuild without it bakes in an absolute path that breaks the moment the build
-directory gets renamed into place), fixed and reconfigured both, smoke-tested each, then
-atomically swapped both into place with zero live processes running on either path (old
-binaries kept as `*-pre-eogfix-20260903`, nothing deleted). Live-verified via the real
-`forge load` path against Qwen3.8-Flash-Next, not just a standalone bypass — see
-`progress.md`'s 2026-09-03 entries for the full narrative, including a second, more serious
-bug this same verification pass surfaced (`GGML_CUDA_ENABLE_UNIFIED_MEMORY`, see this
-README's `GGML_CUDA_DISABLE_GRAPHS` section above). Pushed to GitHub 2026-09-03 despite Tohil
-having no cached push credentials for `jsaigou/llama.cpp`: `git bundle create` on Tohil, the
-bundle transferred to a machine with a working `gh`-authenticated credential, cloned `origin`
-fresh there (Tohil's own clone is shallow, so a bundle built from it can't reconstruct
-standalone — cloning `origin` first and fetching the bundle's new commits on top sidesteps
-that), pushed from there. `origin/kintsugi` now matches Tohil exactly (verified via
-`git ls-remote`); same relay used for the other branches below.
-
-### 4. Two parked performance investigations (2026-09-08/09) — real, correct, not production-ready
-
-Both hand-ported and building/loading correctly, both pushed to GitHub, neither merged into
-`kintsugi` — kept as separate branches to revisit if their upstream PRs stabilize.
-
-- **`perf/qwen4exp-qsa-pool`** (off Nathanw1014's PR#9, cross-fork from `firelzrd/llama.cpp`
-  since `git apply`/cherry-pick were infeasible against kintsugi's shallow, divergent history —
-  hand-ported instead): pools/caches a block's normalized+rotated QSA indexer key instead of
-  recomputing it every ubatch, plus two micro-opts. **Parked: no measured ROCm gain on Tohil's
-  hardware.** Correct and safe, just not worth carrying.
-- **`feature/qwen4exp-mtp-shared-embd`** (rebase onto ggml-org/llama.cpp#28243, "1.3-2x faster
-  MTP" via a restructured MTP tensor/GGUF format that lets a draft head borrow the target's
-  token-embeddings/output-norm/lm-head instead of carrying its own — needs a fresh model export,
-  not just a code port; a dedicated 28-of-131-shard, ~89 GB export was pulled for this).
-  Building and loading correctly, but this was flagged from the start as the riskiest phase
-  ("most likely to reopen the garbage-token/memory-corruption bug class already root-caused
-  once") — **parked after finding a real correctness bug**, not merged.
-
-Both branches are available to revisit if either upstream PR lands, or if someone wants to
-pick up the correctness bug from where it was left.
-
-### Updating this fork
-
-Both patch sets are single self-contained commits/short commit chains, kept as a clean
-cherry-pick chain on top of upstream `master` (not a long-lived merge) so they can be
-replayed onto a newer `master` at any time:
-
-```sh
-git checkout -b kintsugi-next upstream/master
-git cherry-pick <kintsugi-commit>
-git cherry-pick <qwen4exp-mtp-commit-range>
-# resolve any conflicts (expect occasional trivial ones as upstream's own
-# qwen4exp support evolves — diff carefully, they've so far all been comment/
-# already-superseded-test-case conflicts, not semantic ones)
-```
+The full original write-up (diagnosis history, the 231K-token depth soak, the EOG-fix
+analysis) is in this README on the `kintsugi` branch.
 
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
+
+```bash
+# curl
+curl -LsSf https://llama.app/install.sh | sh
+
+# powershell
+irm https://llama.app/install.ps1 | iex
+```
 
 - Visit https://llama.app and follow the instructions
 - Run with Docker - see our [Docker documentation](docs/docker.md)
@@ -298,7 +146,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 | [CANN](docs/build.md#cann) | Ascend NPU |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon [In Progress]](docs/backend/snapdragon/README.md) | Snapdragon |
+| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
 | [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |
 | [Metal](docs/build.md#metal-build) | Apple Silicon |
