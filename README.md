@@ -21,9 +21,10 @@
 
 A working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a self-hosted
 inference host (AMD Strix Halo, Ryzen AI Max+ 395, `gfx1151`, 128 GB unified memory).
-**Current branch: `rebase/upstream-20261022`** — upstream `master` at `7170cad4d`
-(2026-10-22) plus two patches (below). The older `kintsugi` branch (based on upstream
-`458681e1d`, 2026-09-01) is kept untouched for rollback, along with its long-form notes.
+**Branch `kintsugi`** (merged 2026-10-23; tree identical to `rebase/upstream-20261022`) —
+upstream `master` at `7170cad4d` (2026-10-22) plus two patches (below). The pre-rebase history
+(based on upstream `458681e1d`, 2026-09-01) is the merge's first parent, so
+`git show edfb0e840:README.md` has the long-form notes.
 
 ### Patches carried on top of upstream
 
@@ -79,7 +80,7 @@ not isolated (upstream's ROCm and qwen4exp kernel work since September is the li
   *splits* the configured context across N slots.
 
 The full original write-up (diagnosis history, the 231K-token depth soak, the EOG-fix
-analysis) is in this README on the `kintsugi` branch.
+analysis) is in this README at commit `edfb0e840` (the previous `kintsugi` tip).
 
 ## Quick start
 
