@@ -19,6 +19,14 @@
 
 ## This fork (jsaigou/llama.cpp)
 
+> **OBSOLETE (2026-11-01).** The two patches described below were retired. Plain upstream
+> `a91eab67` reuses the cross-turn KV cache on hybrid models exactly as this branch did (Qwen3.6 MTP,
+> Ornith, Flash-Next, and a 187K-token prompt: 16-30 prompt tokens re-evaluated per follow-up turn on both),
+> so production now runs unpatched upstream. This branch is kept as history only. Its final state is tagged
+> `archive/kintsugi-final-20261101`, and the two commits are preserved as patch files in the forge repo
+> (`docs/history/kintsugi/`, ADR-0019). Experiments live on branches off plain upstream, e.g.
+> `feature/clover-draft-self-r3`. **Do not base new work on this branch.**
+
 A working fork of upstream `ggml-org/llama.cpp`, maintained for **Tohil**, a self-hosted
 inference host (AMD Strix Halo, Ryzen AI Max+ 395, `gfx1151`, 128 GB unified memory).
 **Branch `kintsugi`** (merged 2026-10-23; tree identical to `rebase/upstream-20261022`) —
