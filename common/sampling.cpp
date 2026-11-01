@@ -188,6 +188,15 @@ std::string common_params_sampling::print() const {
     return std::string(result);
 }
 
+bool common_params_sampling_supports_entropy_accept(const struct common_params_sampling & params) {
+    return params.temp == 0.0f && params.grammar.empty() && !params.backend_sampling &&
+            params.reasoning_budget_tokens < 0 && !params.reasoning_control &&
+            params.logit_bias.empty() && !params.ignore_eos && params.dynatemp_range == 0.0f &&
+            params.xtc_probability == 0.0f && params.typ_p == 1.0f && params.mirostat == 0 &&
+            params.adaptive_target < 0.0f && params.penalty_repeat == 1.0f &&
+            params.penalty_freq == 0.0f && params.penalty_present == 0.0f && params.dry_multiplier == 0.0f;
+}
+
 struct common_sampler * common_sampler_init(
         const struct llama_model * model,
         struct common_params_sampling & params) {
@@ -199,12 +208,7 @@ struct common_sampler * common_sampler_init(
                 !std::isfinite(params.spec_accept_delta) || params.spec_accept_delta < 0.0f || params.spec_accept_delta > 1.0f) {
             throw std::invalid_argument("entropy acceptance parameters must be in [0, 1]");
         }
-        if (params.temp != 0.0f || !params.grammar.empty() || params.backend_sampling ||
-                params.reasoning_budget_tokens >= 0 || params.reasoning_control ||
-                !params.logit_bias.empty() || params.ignore_eos || params.dynatemp_range != 0.0f ||
-                params.xtc_probability != 0.0f || params.typ_p != 1.0f || params.mirostat != 0 ||
-                params.adaptive_target >= 0.0f || params.penalty_repeat != 1.0f ||
-                params.penalty_freq != 0.0f || params.penalty_present != 0.0f || params.dry_multiplier != 0.0f) {
+        if (!common_params_sampling_supports_entropy_accept(params)) {
             throw std::invalid_argument("entropy acceptance requires unconstrained greedy host sampling");
         }
     }

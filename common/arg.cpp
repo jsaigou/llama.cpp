@@ -4187,7 +4187,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
             params.sampling.spec_accept_ratio = p;
         }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--spec-accept-delta"}, "P",
         "entropy-threshold speculative acceptance multiplier (0..1, default: 0.6)",
@@ -4198,7 +4198,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
             params.sampling.spec_accept_delta = p;
         }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE}));
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER}));
 
     add_opt(common_arg(
         {"--spec-draft-n-max"}, "N",
