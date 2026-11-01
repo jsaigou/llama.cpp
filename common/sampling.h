@@ -37,6 +37,11 @@ struct common_sampler;
 // llama_sampler API overloads
 
 // note: can mutate params in some cases
+// true when entropy-threshold speculative acceptance (spec_accept_ratio >= 0) can be used with these params:
+// it needs unconstrained greedy host sampling. The server uses this to fall back to ordinary acceptance for
+// requests that sample (temp > 0, penalties, grammar, ...) instead of failing them.
+bool common_params_sampling_supports_entropy_accept(const struct common_params_sampling & params);
+
 struct common_sampler * common_sampler_init(
         const struct llama_model * model,
         struct common_params_sampling & params);

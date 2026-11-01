@@ -2055,6 +2055,13 @@ private:
 
         // initialize samplers
         if (task.need_sampling()) {
+            // entropy-threshold draft acceptance needs greedy unconstrained sampling; a request that samples
+            // (temp > 0, penalties, grammar, ...) falls back to ordinary acceptance instead of failing
+            if (task.params.sampling.spec_accept_ratio >= 0.0f &&
+                    !common_params_sampling_supports_entropy_accept(task.params.sampling)) {
+                SLT_INF(slot, "%s\n", "spec-accept-ratio disabled for this request: sampling is not greedy/unconstrained");
+                task.params.sampling.spec_accept_ratio = -1.0f;
+            }
             try {
                 slot.smpl.reset(common_sampler_init(model_tgt, task.params.sampling));
             } catch (std::exception & e) {
