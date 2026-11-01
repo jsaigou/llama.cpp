@@ -208,9 +208,6 @@ struct common_sampler * common_sampler_init(
                 !std::isfinite(params.spec_accept_delta) || params.spec_accept_delta < 0.0f || params.spec_accept_delta > 1.0f) {
             throw std::invalid_argument("entropy acceptance parameters must be in [0, 1]");
         }
-        if (!common_params_sampling_supports_entropy_accept(params)) {
-            throw std::invalid_argument("entropy acceptance requires unconstrained greedy host sampling");
-        }
     }
     if (!std::isfinite(params.penalty_repeat) ||
         params.penalty_repeat <= 0.0f ||
@@ -708,6 +705,13 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     return id;
 }
 
+// Entropy acceptance applies only to unconstrained greedy sampling. The server builds samplers from its own
+// defaults (temp > 0) at startup and per request, so an incompatible sampler uses ordinary acceptance instead of
+// failing; this must not mutate the shared params, which would disable the flag for later greedy requests.
+static bool common_sampler_uses_entropy_accept(const struct common_sampler * gsmpl) {
+    return gsmpl->params.spec_accept_ratio >= 0.0f && common_params_sampling_supports_entropy_accept(gsmpl->params);
+}
+
 // Use raw target probabilities, before temperature, truncation or penalties.
 static bool common_sampler_accept_entropy(const float * logits, int n_vocab, llama_token token, float ratio, float delta) {
     GGML_ASSERT(logits && token >= 0 && token < n_vocab);
@@ -735,7 +739,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
 
     size_t i = 0;
     for (; i < draft.size(); i++) {
-        const bool accept = gsmpl->params.spec_accept_ratio >= 0.0f &&
+        const bool accept = common_sampler_uses_entropy_accept(gsmpl) &&
                 common_sampler_accept_entropy(llama_get_logits_ith(ctx, idxs[i]), llama_vocab_n_tokens(vocab),
                         draft[i], gsmpl->params.spec_accept_ratio, gsmpl->params.spec_accept_delta);
         const llama_token id = accept ? draft[i] : common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
@@ -777,7 +781,7 @@ static float prob_of(const llama_token_data * data, size_t n, llama_token id) {
 std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<std::vector<llama_token_data>> & draft_q, bool grammar_first) {
     GGML_ASSERT(idxs.size()    == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
     GGML_ASSERT(draft_q.size() == draft.size() && "draft_q must have one entry per draft token");
-    if (gsmpl->params.spec_accept_ratio >= 0.0f) {
+    if (common_sampler_uses_entropy_accept(gsmpl)) {
         return common_sampler_sample_and_accept_n(gsmpl, ctx, idxs, draft, grammar_first);
     }
 
